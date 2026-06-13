@@ -41,6 +41,7 @@ class Battery(Base):
     # Relationships
     telemetry_readings = relationship("Telemetry", back_populates="battery")
     soh_snapshots = relationship("SoHSnapshot", back_populates="battery")
+    rul_predictions = relationship("RULPrediction", back_populates="battery")
 
     def __repr__(self) -> str:
         return f"<Battery(battery_id={self.battery_id!r})>"
@@ -106,4 +107,38 @@ class SoHSnapshot(Base):
         return (
             f"<SoHSnapshot(battery_id={self.battery_id!r}, "
             f"cycle={self.cycle_number}, soh={self.soh_percent}%)>"
+        )
+
+
+class RULPrediction(Base):
+    __tablename__ = "rul_predictions"
+
+    id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    battery_id = Column(
+        String(32),
+        ForeignKey("batteries.battery_id"),
+        nullable=False,
+    )
+    predicted_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    predicted_rul_cycles = Column(Integer, nullable=False)
+    confidence_lower = Column(Integer, nullable=True)
+    confidence_upper = Column(Integer, nullable=True)
+    model_version = Column(String(16), nullable=False)
+    input_soh_percent = Column(Numeric(5, 2), nullable=True)
+
+    # Relationships
+    battery = relationship("Battery", back_populates="rul_predictions")
+
+    def __repr__(self) -> str:
+        return (
+            f"<RULPrediction(battery_id={self.battery_id!r}, "
+            f"rul={self.predicted_rul_cycles}, model={self.model_version})>"
         )

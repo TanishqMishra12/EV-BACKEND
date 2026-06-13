@@ -1,25 +1,40 @@
 """
-POST /api/v1/ingest — Battery telemetry ingestion endpoint.
+POST /api/v1/ingest — Battery telemetry ingestion endpoint (Internal Only).
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+import os
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from db.models import Battery, Telemetry
 from db.session import get_db
-from models.schemas import IngestPayload, IngestResponse
-from services.soh_service import calculate_soh
+from models.schemas import IngestPayload, IngestResponse, ErrorResponse
+from services.ingest_service import ingest_telemetry_shared
 
 router = APIRouter()
 
-DEFAULT_NOMINAL_CAPACITY_MAH = 2000.0
+
+def verify_internal_key(
+    x_internal_api_key: str = Header(None, alias="X-Internal-API-Key")
+) -> None:
+    """
+    Ensure the request contains the correct internal API key.
+    Raises 403 Forbidden if missing or incorrect.
+    """
+    expected_key = os.getenv("INTERNAL_API_KEY")
+    if not expected_key or x_internal_api_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Invalid or missing internal API key",
+        )
 
 
 @router.post(
     "/ingest",
     response_model=IngestResponse,
+    responses={403: {"model": ErrorResponse}},
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Ingest a single telemetry reading",
+    dependencies=[Depends(verify_internal_key)],
+    summary="Ingest a single telemetry reading (internal only)",
 )
 def ingest_telemetry(
     payload: IngestPayload,
@@ -27,37 +42,8 @@ def ingest_telemetry(
     db: Session = Depends(get_db),
 ):
     """
-    Validate and persist a telemetry reading.
-
-    - Auto-creates the battery record if it doesn't already exist.
-    - Triggers SoH recalculation as a background task.
+    Validate and persist a telemetry reading via HTTP.
+    Requires the 'X-Internal-API-Key' header.
     """
-    # ── Ensure battery exists ────────────────────────────────────────────
-    battery = db.query(Battery).filter(Battery.battery_id == payload.battery_id).first()
-    if battery is None:
-        battery = Battery(
-            battery_id=payload.battery_id,
-            vehicle_id=payload.vehicle_id,
-            nominal_capacity_mah=DEFAULT_NOMINAL_CAPACITY_MAH,
-        )
-        db.add(battery)
-        db.flush()  # assign PK before FK reference
-
-    # ── Insert telemetry row ─────────────────────────────────────────────
-    reading = Telemetry(
-        battery_id=payload.battery_id,
-        recorded_at=payload.timestamp,
-        cycle_number=payload.cycle_number,
-        voltage_v=payload.measurements.voltage_v,
-        current_a=payload.measurements.current_a,
-        temperature_c=payload.measurements.temperature_c,
-        capacity_mah=payload.measurements.capacity_mah,
-        cycle_type=payload.cycle_type,
-    )
-    db.add(reading)
-    db.commit()
-
-    # ── Trigger SoH calculation in the background ────────────────────────
-    background_tasks.add_task(calculate_soh, payload.battery_id)
-
-    return IngestResponse(ingested=True, battery_id=payload.battery_id)
+    battery_id = ingest_telemetry_shared(payload, db, background_tasks)
+    return IngestResponse(ingested=True, battery_id=battery_id)

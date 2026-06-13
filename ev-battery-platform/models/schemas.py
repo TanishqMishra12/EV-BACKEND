@@ -60,6 +60,34 @@ class IngestResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# SQS POST /api/v1/ingest (Phase 2 message format)
+# ---------------------------------------------------------------------------
+
+
+class MetadataV2(BaseModel):
+    """Metadata block for SQS payloads — accepts any extra keys."""
+    model_config = {"extra": "allow"}
+
+    simulator_version: Optional[str] = None
+    aws_region: Optional[str] = None
+    queue_name: Optional[str] = None
+    sqs_message_group_id: Optional[str] = None
+
+
+class IngestPayloadV2(BaseModel):
+    schema_version: str = Field(..., description="Data contract version (should be '2.0')")
+    source: str = Field(..., description="Data source identifier")
+    battery_id: str = Field(..., max_length=32)
+    vehicle_id: str = Field(..., max_length=64)
+    timestamp: datetime = Field(..., description="Measurement timestamp (ISO 8601)")
+    sequence_id: str = Field(..., description="Unique sequence ID for ordering")
+    cycle_number: int = Field(..., ge=0)
+    cycle_type: str = Field(..., max_length=16, description="'charge' or 'discharge'")
+    measurements: Measurements
+    metadata: Optional[MetadataV2] = None
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v1/telemetry/{battery_id}
 # ---------------------------------------------------------------------------
 
@@ -138,8 +166,42 @@ class FleetSummaryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Week 6 Endpoints
+# ---------------------------------------------------------------------------
+
+
+class ConfidenceInterval(BaseModel):
+    lower_bound: int
+    upper_bound: int
+    confidence_percent: float = 90.0
+
+
+class RULResponse(BaseModel):
+    battery_id: str
+    predicted_rul_cycles: int
+    confidence_interval: ConfidenceInterval
+    current_soh_percent: float
+    eol_threshold_soh: float = 70.0
+    model_version: str
+    predicted_at: datetime
+    alert_level: str
+
+
+class DegradationEntry(BaseModel):
+    date: str
+    avg_soh_percent: float
+    min_soh_percent: float
+
+
+class DegradationResponse(BaseModel):
+    battery_id: str
+    data: list[DegradationEntry]
+
+
+# ---------------------------------------------------------------------------
 # Error
 # ---------------------------------------------------------------------------
+
 
 
 class ErrorResponse(BaseModel):

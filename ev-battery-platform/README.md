@@ -1,59 +1,79 @@
 # EV Battery Telemetry & Diagnostics Platform
 
 A FastAPI backend for ingesting, querying, and analysing EV battery telemetry data.  
-Uses **PostgreSQL + TimescaleDB** for time-series storage and **Docker Compose** for orchestration.
+Uses **PostgreSQL + TimescaleDB** for time-series storage, **ElasticMQ** for SQS FIFO queue emulation, and **Docker Compose** for orchestration.
+
+---
 
 ## Architecture
 
 ```
-┌────────────┐     POST /ingest      ┌───────────┐     ┌──────────────────┐
-│  Simulator │ ────────────────────▶  │  FastAPI   │────▶│ PostgreSQL       │
-│  / Client  │                        │  (8000)    │     │ + TimescaleDB    │
-│            │ ◀──── GET /telemetry   │            │     │ (5432)           │
-│            │ ◀──── GET /soh         │            │     │                  │
-└────────────┘                        └───────────┘     └──────────────────┘
-                                           │
-                                      Background Task
-                                      ➜ calculate_soh()
+                                  ┌─────────────┐
+                                  │ EV Sim/AWS  │
+                                  └─────────────┘
+                                         │ SQS Message (Phase 2 FIFO)
+                                         ▼
+   ┌─────────────┐   HTTP Ingest   ┌───────────┐ (Polls)   ┌───────────┐
+   │ Sim/Internal│ ──────────────▶ │  FastAPI  │ ◀──────── │ ElasticMQ │
+   │ Client      │  (X-API-Key)    │  (8000)   │           └───────────┘
+   └─────────────┘                 └───────────┘
+                                         │
+                                         ├─────▶ ┌──────────────────┐
+                                         │       │ PostgreSQL       │
+                                         │       │ + TimescaleDB    │
+                                         │       │ (5432)           │
+                                         │       └──────────────────┘
+                                         ▼
+                                  Background Tasks
+                                  ➜ calculate_soh()
+                                  ➜ predict_rul() (LSTM Inference every 10th message)
 ```
+
+---
 
 ## Quick Start
 
-### 1. Clone & configure
-
+### 1. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env if needed (defaults work out of the box)
+# Default environment parameters work out of the box.
 ```
 
-### 2. Start services
-
+### 2. Start Services
+This starts PostgreSQL (TimescaleDB), FastAPI, and ElasticMQ (SQS simulator):
 ```bash
 docker compose up -d --build
 ```
 
-### 3. Run database migrations
-
+### 3. Run Database Migrations
 ```bash
 docker compose exec fastapi alembic upgrade head
 ```
 
-### 4. Verify
-
+### 4. Verify API Readiness
 ```bash
-# Health check
+# Health check (Liveness)
 curl http://localhost:8000/health
+# Response: {"status": "ok"}
 
-# Should return: {"status": "ok"}
+# Readiness check (Checks database connectivity and SQS reachability)
+curl http://localhost:8000/ready
+# Response: {"status": "ready", "db": "connected", "sqs": "reachable"}
 ```
+
+---
 
 ## API Endpoints
 
-### POST /api/v1/ingest — Ingest telemetry reading
-
+### 1. Ingest Telemetry (Internal Only)
+* **Endpoint:** `POST /api/v1/ingest`
+* **Headers:** `X-Internal-API-Key: super_secret_internal_api_key_123`
+* **Response (202):** `{"ingested": true, "battery_id": "EV_B0005_001"}`
+* **Example:**
 ```bash
 curl -X POST http://localhost:8000/api/v1/ingest \
   -H "Content-Type: application/json" \
+  -H "X-Internal-API-Key: super_secret_internal_api_key_123" \
   -d '{
     "schema_version": "1.0",
     "source": "ev_simulator_local",
@@ -68,99 +88,70 @@ curl -X POST http://localhost:8000/api/v1/ingest \
       "temperature_c": 24.5,
       "capacity_mah": 1823.4,
       "internal_resistance_ohm": 0.0214
-    },
-    "metadata": {
-      "simulator_version": "1.0.0",
-      "replay_speed": 1.0,
-      "source_file": "B0005.csv"
     }
   }'
-
-# Response (202):
-# {"ingested": true, "battery_id": "EV_B0005_001"}
 ```
 
-### GET /api/v1/telemetry/{battery_id} — Query readings
-
-```bash
-curl "http://localhost:8000/api/v1/telemetry/EV_B0005_001?limit=5"
-
-# Response (200):
-# {
-#   "battery_id": "EV_B0005_001",
-#   "total_records": 1,
-#   "cursor": null,
-#   "has_more": false,
-#   "readings": [...]
-# }
+### 2. Get RUL Prediction (JWT Protected)
+* **Endpoint:** `GET /api/v1/rul/{battery_id}`
+* **Headers:** `Authorization: Bearer <JWT_TOKEN>`
+* **Response (200):**
+```json
+{
+  "battery_id": "EV_B0005_001",
+  "predicted_rul_cycles": 213,
+  "confidence_interval": {
+    "lower_bound": 188,
+    "upper_bound": 238,
+    "confidence_percent": 90.0
+  },
+  "current_soh_percent": 82.4,
+  "eol_threshold_soh": 70.0,
+  "model_version": "v2.0",
+  "predicted_at": "2024-01-15T14:20:00.000Z",
+  "alert_level": "none"
+}
 ```
 
-Pagination: pass the `cursor` value from a previous response to get the next page.
-
-### GET /api/v1/soh/{battery_id} — State of Health
-
-```bash
-curl http://localhost:8000/api/v1/soh/EV_B0005_001
-
-# Response (200):
-# {
-#   "battery_id": "EV_B0005_001",
-#   "current_soh_percent": 91.17,
-#   "status": "healthy",
-#   "nominal_capacity_mah": 2000.0,
-#   "current_capacity_mah": 1823.4,
-#   "last_calculated_at": "2024-01-15T14:23:45.123000Z",
-#   "trend": { ... }
-# }
+### 3. Get Degradation Analytics (JWT Protected)
+* **Endpoint:** `GET /api/v1/analytics/degradation`
+* **Query Params:** `battery_id` (required), `start_date` (optional), `end_date` (optional)
+* **Headers:** `Authorization: Bearer <JWT_TOKEN>`
+* **Response (200):**
+```json
+{
+  "battery_id": "EV_B0005_001",
+  "data": [
+    {"date": "2024-01-14", "avg_soh_percent": 83.2, "min_soh_percent": 82.9},
+    {"date": "2024-01-15", "avg_soh_percent": 82.4, "min_soh_percent": 82.1}
+  ]
+}
 ```
+
+### 4. Query Telemetry (JWT Protected)
+* **Endpoint:** `GET /api/v1/telemetry/{battery_id}`
+* **Query Params:** `limit` (optional), `cursor` (optional)
+* **Response (200):** Lists telemetry entries using cursor-based pagination.
+
+### 5. Get SOH Status (JWT Protected)
+* **Endpoint:** `GET /api/v1/soh/{battery_id}`
+* **Response (200):** Returns current SOH, state classification (healthy, warning, critical), and trend direction.
+
+---
+
+## AWS SQS FIFO Integration
+* **Production Queue:** `ev-telemetry.fifo`
+* **Production DLQ:** `ev-telemetry-dlq.fifo`
+* **Processing Rule:** Telemetry parsing/validation errors are retried up to 3 times before routing to DLQ with an attached `Error` attribute.
+* **Local Emulator Console:** SQS emulator admin UI is available at `http://localhost:9325`.
+
+---
 
 ## Running Tests
 
-Tests use an in-memory SQLite database (no Docker required):
-
+Tests use an in-memory SQLite database (no external Docker dependency required):
 ```bash
-# Inside the container
-docker compose exec fastapi pytest tests/ -v
-
-# Or locally with a virtual environment
+# Locally with virtualenv
 pip install -r requirements.txt
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
-
-## Project Structure
-
-```
-ev-battery-platform/
-├── main.py                  # FastAPI app entry point
-├── requirements.txt         # Python dependencies
-├── Dockerfile               # FastAPI container
-├── docker-compose.yml       # Postgres + FastAPI
-├── .env / .env.example      # Environment variables
-├── alembic.ini              # Alembic config
-├── alembic/
-│   ├── env.py               # Migration environment
-│   └── versions/
-│       └── 001_*.py         # Initial schema migration
-├── db/
-│   ├── models.py            # SQLAlchemy ORM models
-│   └── session.py           # Engine + session factory
-├── models/
-│   └── schemas.py           # Pydantic request/response schemas
-├── routers/
-│   ├── ingest.py            # POST /api/v1/ingest
-│   ├── telemetry.py         # GET /api/v1/telemetry/{battery_id}
-│   └── soh.py               # GET /api/v1/soh/{battery_id}
-├── services/
-│   └── soh_service.py       # SoH calculation logic
-└── tests/
-    ├── conftest.py           # Test fixtures (SQLite)
-    ├── test_ingest.py
-    ├── test_telemetry.py
-    └── test_soh.py
-```
-
-## Database Schema
-
-- **batteries** — Master battery registry (battery_id, vehicle_id, nominal_capacity_mah, ...)
-- **telemetry** — Raw streaming data, stored as a TimescaleDB hypertable partitioned by `recorded_at`
-- **soh_snapshots** — Computed State-of-Health per cycle, with UNIQUE constraint on (battery_id, cycle_number)

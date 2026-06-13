@@ -11,9 +11,13 @@ Key details:
     task uses the test DB instead of the production PostgreSQL.
 """
 
+import os
+os.environ["TESTING"] = "true"
+
 from unittest.mock import patch
 
 import pytest
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -73,6 +77,7 @@ def client(db_session):
     3. Patches soh_service.SessionLocal so background tasks use the test DB.
     """
     from auth.dependencies import verify_jwt
+    from routers.ingest import verify_internal_key
 
     def _override_get_db():
         try:
@@ -83,11 +88,17 @@ def client(db_session):
     def _override_verify_jwt():
         return {"username": "admin", "role": "fleet_admin"}
 
+    def _override_verify_internal_key():
+        return
+
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[verify_jwt] = _override_verify_jwt
+    app.dependency_overrides[verify_internal_key] = _override_verify_internal_key
 
     with patch("services.soh_service.SessionLocal", return_value=db_session):
-        with TestClient(app) as c:
-            yield c
+        with patch("services.ingest_service.SessionLocal", return_value=db_session):
+            with TestClient(app) as c:
+                yield c
 
     app.dependency_overrides.clear()
+

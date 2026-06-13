@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from auth.dependencies import require_role
-from db.models import Battery, SoHSnapshot, Telemetry
+from db.models import Battery, SoHSnapshot, Telemetry, RULPrediction
 from db.session import get_db
 from models.schemas import FleetSummaryResponse, FleetBatteryEntry, StatusSummary
 from services.soh_service import get_soh_status
@@ -70,16 +70,41 @@ def get_fleet_summary(db: Session = Depends(get_db)):
         .subquery()
     )
 
-    # ── 3. Join Battery registry with subqueries ──────────────────────────
+    # ── 3. Fetch latest RUL prediction per battery ──────────────────────────
+    subq_rul = (
+        db.query(
+            RULPrediction.battery_id,
+            func.max(RULPrediction.predicted_at).label("max_predicted"),
+        )
+        .group_by(RULPrediction.battery_id)
+        .subquery()
+    )
+
+    latest_rul = (
+        db.query(
+            RULPrediction.battery_id,
+            RULPrediction.predicted_rul_cycles,
+        )
+        .join(
+            subq_rul,
+            (RULPrediction.battery_id == subq_rul.c.battery_id)
+            & (RULPrediction.predicted_at == subq_rul.c.max_predicted),
+        )
+        .subquery()
+    )
+
+    # ── 4. Join Battery registry with subqueries ──────────────────────────
     results = (
         db.query(
             Battery.battery_id,
             Battery.vehicle_id,
             latest_soh.c.soh_percent,
             latest_tel.c.recorded_at,
+            latest_rul.c.predicted_rul_cycles,
         )
         .outerjoin(latest_soh, Battery.battery_id == latest_soh.c.battery_id)
         .outerjoin(latest_tel, Battery.battery_id == latest_tel.c.battery_id)
+        .outerjoin(latest_rul, Battery.battery_id == latest_rul.c.battery_id)
         .all()
     )
 
@@ -115,7 +140,7 @@ def get_fleet_summary(db: Session = Depends(get_db)):
                 battery_id=r.battery_id,
                 vehicle_id=r.vehicle_id,
                 current_soh_percent=soh_pct,
-                predicted_rul_cycles=None,  # Placeholder for LSTM prediction in later milestones
+                predicted_rul_cycles=r.predicted_rul_cycles,
                 status=status,
                 last_seen=last_seen,
             )
