@@ -45,11 +45,13 @@ def api_client():
     """Create HTTPX client for calling the live API."""
     # Verify API is reachable
     try:
-        with httpx.Client(base_url=API_BASE_URL) as client:
-            resp = client.get("/health")
-            if resp.status_code != 200:
-                raise RuntimeError("API returned non-200")
-            return client
+        client = httpx.Client(base_url=API_BASE_URL)
+        resp = client.get("/health")
+        if resp.status_code != 200:
+            client.close()
+            raise RuntimeError("API returned non-200")
+        yield client
+        client.close()
     except Exception as e:
         pytest.skip(
             f"Skipping integration tests: API is not running at {API_BASE_URL}. Error: {e}"
@@ -88,6 +90,10 @@ def test_integration_pipeline(db_engine, api_client, admin_token):
         session.commit()
 
     headers = {"Authorization": f"Bearer {admin_token}"}
+    headers_ingest = {
+        "Authorization": f"Bearer {admin_token}",
+        "X-Internal-API-Key": os.getenv("INTERNAL_API_KEY", "super_secret_internal_api_key_123")
+    }
 
     # ── 2. Ingest Multiple Telemetry Readings ────────────────────────────────
     readings = [
@@ -112,7 +118,7 @@ def test_integration_pipeline(db_engine, api_client, admin_token):
                 "capacity_mah": r["cap"],
             },
         }
-        resp = api_client.post("/api/v1/ingest", json=payload, headers=headers)
+        resp = api_client.post("/api/v1/ingest", json=payload, headers=headers_ingest)
         assert resp.status_code == 202
         assert resp.json()["ingested"] is True
 

@@ -13,6 +13,7 @@ Key details:
 
 import os
 os.environ["TESTING"] = "true"
+os.environ["RATE_LIMIT_RULE"] = "100/minute"
 
 from unittest.mock import patch
 
@@ -91,14 +92,20 @@ def client(db_session):
     def _override_verify_internal_key():
         return
 
+    from unittest.mock import MagicMock
+    mock_sqs = MagicMock()
+    mock_sqs.get_queue_attributes.return_value = {"Attributes": {"QueueArn": "mock-arn"}}
+
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[verify_jwt] = _override_verify_jwt
     app.dependency_overrides[verify_internal_key] = _override_verify_internal_key
 
     with patch("services.soh_service.SessionLocal", return_value=db_session):
         with patch("services.ingest_service.SessionLocal", return_value=db_session):
-            with TestClient(app) as c:
-                yield c
+            with patch("main.get_sqs_client", return_value=mock_sqs):
+                with patch("services.sqs_poller.get_sqs_client", return_value=mock_sqs):
+                    with TestClient(app) as c:
+                        yield c
 
     app.dependency_overrides.clear()
 

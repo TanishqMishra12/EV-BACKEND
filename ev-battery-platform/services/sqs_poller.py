@@ -124,7 +124,7 @@ async def poll_loop(queue_url: str, dlq_url: str, stop_event: asyncio.Event) -> 
                     # 3. Direct database writes (using dedicated background session)
                     db: Session = SessionLocal()
                     try:
-                        ingest_telemetry_shared(payload, db)
+                        ingest_telemetry_shared(payload, db, source="poller")
                     finally:
                         db.close()
 

@@ -5,6 +5,7 @@ Auth Router — POST /auth/token for user authentication.
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from auth.jwt_handler import create_access_token
+from auth.dependencies import verify_jwt
 
 router = APIRouter()
 
@@ -43,4 +44,26 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
         "access_token": access_token,
         "token_type": "bearer",
         "role": user["role"],
+    }
+
+
+@router.post(
+    "/refresh",
+    summary="Refresh an active access token",
+    description="Accepts a valid, unexpired access token and returns a new token with fresh expiry.",
+)
+def refresh_token(current_user: dict = Depends(verify_jwt)):
+    """
+    Validate the existing access token and issue a fresh access token
+    with a new expiry time, retaining the same subject and role claims.
+    """
+    new_token = create_access_token(
+        subject=current_user["username"],
+        role=current_user["role"],
+        expires_minutes=30,
+    )
+    return {
+        "access_token": new_token,
+        "token_type": "bearer",
+        "role": current_user["role"],
     }

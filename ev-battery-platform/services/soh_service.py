@@ -41,17 +41,17 @@ def calculate_soh(battery_id: str) -> None:
         db.close()
 
 
-def _calculate_soh_with_session(battery_id: str, db: Session) -> None:
+def _calculate_soh_with_session(battery_id: str, db: Session) -> float | None:
     """Core logic — separated so tests can inject their own session."""
 
     # ── Get nominal capacity ─────────────────────────────────────────────
     battery = db.query(Battery).filter(Battery.battery_id == battery_id).first()
     if battery is None:
-        return  # nothing to compute
+        return None  # nothing to compute
 
     nominal = float(battery.nominal_capacity_mah)
     if nominal <= 0:
-        return
+        return None
 
     # ── Get latest telemetry reading ─────────────────────────────────────
     latest_reading = (
@@ -61,7 +61,7 @@ def _calculate_soh_with_session(battery_id: str, db: Session) -> None:
         .first()
     )
     if latest_reading is None or latest_reading.capacity_mah is None:
-        return
+        return None
 
     current_capacity = float(latest_reading.capacity_mah)
     soh_percent = round((current_capacity / nominal) * 100, 2)
@@ -90,3 +90,4 @@ def _calculate_soh_with_session(battery_id: str, db: Session) -> None:
         db.add(snapshot)
 
     db.commit()
+    return soh_percent

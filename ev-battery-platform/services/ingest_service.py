@@ -8,12 +8,15 @@ from collections import defaultdict
 import threading
 from sqlalchemy.orm import Session
 
+import time
+import structlog
 from db.models import Battery, Telemetry, SoHSnapshot, RULPrediction
 from db.session import SessionLocal
-from services.soh_service import calculate_soh
+from services.soh_service import _calculate_soh_with_session
 from services.ml_service import predict_rul
 
 logger = logging.getLogger("ingest_service")
+ingest_logger = structlog.get_logger().bind(logger="ingest")
 
 # Thread-safe in-memory message counter (resets on app restart)
 in_memory_counter = defaultdict(int)
@@ -87,11 +90,13 @@ def run_lstm_prediction_task(battery_id: str) -> None:
         db.close()
 
 
-def ingest_telemetry_shared(payload, db: Session, background_tasks=None) -> str:
+def ingest_telemetry_shared(payload, db: Session, background_tasks=None, source: str = "http") -> str:
     """
     Core ingestion flow used by both HTTP POST and SQS poller.
     Registers battery, logs telemetry, triggers SoH and RUL prediction checks.
     """
+    start_time = time.perf_counter()
+
     # 1. Ensure battery registry entry exists
     battery = db.query(Battery).filter(Battery.battery_id == payload.battery_id).first()
     if battery is None:
@@ -117,15 +122,12 @@ def ingest_telemetry_shared(payload, db: Session, background_tasks=None) -> str:
     db.add(reading)
     db.commit()
 
-    # 3. Trigger SoH calculation
-    if background_tasks is not None:
-        background_tasks.add_task(calculate_soh, payload.battery_id)
-    else:
-        # Run synchronously since we are already in background poller thread
-        try:
-            calculate_soh(payload.battery_id)
-        except Exception as e:
-            logger.error(f"Error in synchronous calculate_soh for {payload.battery_id}: {e}")
+    # 3. Calculate SoH synchronously using the same session to measure total latency
+    soh_value = None
+    try:
+        soh_value = _calculate_soh_with_session(payload.battery_id, db)
+    except Exception as e:
+        logger.error(f"Error in synchronous calculate_soh for {payload.battery_id}: {e}")
 
     # 4. Thread-safe increment of per-battery counter
     with counter_lock:
@@ -145,5 +147,16 @@ def ingest_telemetry_shared(payload, db: Session, background_tasks=None) -> str:
             except RuntimeError:
                 # Fallback to direct call if no loop is running
                 run_lstm_prediction_task(payload.battery_id)
+
+    # 5. Measure latency and log JSON format via structlog
+    latency_ms = (time.perf_counter() - start_time) * 1000.0
+    ingest_logger.info(
+        "telemetry_ingested",
+        battery_id=payload.battery_id,
+        latency_ms=round(latency_ms, 2),
+        soh_value=soh_value,
+        cycle_number=payload.cycle_number,
+        source=source,
+    )
 
     return payload.battery_id

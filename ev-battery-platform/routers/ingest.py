@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from db.session import get_db
 from models.schemas import IngestPayload, IngestResponse, ErrorResponse
 from services.ingest_service import ingest_telemetry_shared
+from auth.limiter import limiter
 
 router = APIRouter()
 
@@ -36,6 +37,7 @@ def verify_internal_key(
     dependencies=[Depends(verify_internal_key)],
     summary="Ingest a single telemetry reading (internal only)",
 )
+@limiter.exempt
 def ingest_telemetry(
     payload: IngestPayload,
     background_tasks: BackgroundTasks,

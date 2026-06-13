@@ -2,11 +2,28 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
-from fastapi import FastAPI, Depends, HTTPException, status
+import time
+import structlog
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+# Configure structlog globally to output JSON
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", key="timestamp"),
+        structlog.processors.JSONRenderer(),
+    ],
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+
+request_logger = structlog.get_logger().bind(logger="request")
 from auth.dependencies import verify_jwt
+from auth.limiter import limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from db.session import get_db
 from routers import auth, fleet, ingest, telemetry, soh, rul, analytics
 from services.sqs_poller import init_queues, poll_loop, get_sqs_client
@@ -59,6 +76,55 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    start_time = time.perf_counter()
+    user = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            from auth.jwt_handler import decode_token
+            payload = decode_token(token)
+            user = payload.get("sub")
+        except Exception:
+            pass
+
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start_time) * 1000.0
+
+    request_logger.info(
+        "request_processed",
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=round(duration_ms, 2),
+        user=user,
+    )
+    return response
+
+
+@app.exception_handler(RateLimitExceeded)
+def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    retry_after = getattr(exc, "retry_after", 60)
+    if retry_after is None:
+        retry_after = 60
+    else:
+        retry_after = int(retry_after)
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "error": "Rate limit exceeded",
+            "retry_after_seconds": retry_after
+        },
+        headers={"Retry-After": str(retry_after)}
+    )
+
+
 # ── Routers ──────────────────────────────────────────────────────────────────
 # Authentication (unprotected)
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -76,12 +142,14 @@ app.include_router(fleet.router, prefix="/api/v1", tags=["Fleet"])
 
 
 @app.get("/health", tags=["Health"])
+@limiter.exempt
 def health_check():
     """Simple liveness probe."""
     return {"status": "ok"}
 
 
 @app.get("/ready", tags=["Health"])
+@limiter.exempt
 def ready_check(db: Session = Depends(get_db)):
     """Readiness probe that checks database connectivity and SQS queue status."""
     db_connected = False

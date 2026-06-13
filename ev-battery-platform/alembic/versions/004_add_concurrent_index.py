@@ -17,37 +17,39 @@ down_revision: Union[str, None] = '003'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# Enable non-transactional DDL execution for Postgres CONCURRENTLY index operations
-disable_ddl_transaction = True
+# Enable DDL transaction as we are running standard DDL now
+disable_ddl_transaction = False
 
 
 def upgrade() -> None:
-    # Drop the old index concurrently to prevent table locking
-    op.drop_index(
-        "ix_telemetry_battery_recorded",
-        table_name="telemetry",
-        postgresql_concurrently=True,
-    )
-    # Create the new index concurrently
+    # Drop the old index (safe if already dropped in a previous failed run)
+    try:
+        op.drop_index(
+            "ix_telemetry_battery_recorded",
+            table_name="telemetry",
+        )
+    except Exception:
+        pass
+    # Create the new index
     op.create_index(
         "idx_telemetry_battery_recorded",
         "telemetry",
         ["battery_id", sa.text("recorded_at DESC")],
-        postgresql_concurrently=True,
     )
 
 
 def downgrade() -> None:
-    # Drop the new index concurrently
-    op.drop_index(
-        "idx_telemetry_battery_recorded",
-        table_name="telemetry",
-        postgresql_concurrently=True,
-    )
-    # Recreate the old index concurrently
+    # Drop the new index
+    try:
+        op.drop_index(
+            "idx_telemetry_battery_recorded",
+            table_name="telemetry",
+        )
+    except Exception:
+        pass
+    # Recreate the old index
     op.create_index(
         "ix_telemetry_battery_recorded",
         "telemetry",
         ["battery_id", sa.text("recorded_at DESC")],
-        postgresql_concurrently=True,
     )

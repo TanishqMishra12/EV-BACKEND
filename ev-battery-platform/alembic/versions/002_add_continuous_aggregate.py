@@ -17,6 +17,9 @@ down_revision: Union[str, None] = '001'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# Enable non-transactional DDL execution for TimescaleDB view creation
+disable_ddl_transaction = True
+
 
 def upgrade() -> None:
     # ── 1. Drop constraints on soh_snapshots to prepare for hypertable conversion ──
@@ -42,24 +45,29 @@ def upgrade() -> None:
     )
 
     # ── 5. Create continuous aggregate view ──────────────────────────────────
-    op.execute("""
-        CREATE MATERIALIZED VIEW hourly_soh_avg
-        WITH (timescaledb.continuous) AS
-        SELECT battery_id,
-               time_bucket('1 hour', snapshot_at) AS hour_bucket,
-               AVG(soh_percent) AS avg_soh,
-               MIN(soh_percent) AS min_soh
-        FROM soh_snapshots
-        GROUP BY battery_id, hour_bucket;
-    """)
+    connection = op.get_bind()
+    if connection.dialect.name == "postgresql":
+        if connection.in_transaction():
+            connection.commit()
+        autocommit_conn = connection.execution_options(isolation_level="AUTOCOMMIT")
+        autocommit_conn.execute(sa.text("""
+            CREATE MATERIALIZED VIEW hourly_soh_avg
+            WITH (timescaledb.continuous) AS
+            SELECT battery_id,
+                   time_bucket('1 hour', snapshot_at) AS hour_bucket,
+                   AVG(soh_percent) AS avg_soh,
+                   MIN(soh_percent) AS min_soh
+            FROM soh_snapshots
+            GROUP BY battery_id, hour_bucket;
+        """))
 
-    # ── 6. Add policy to refresh aggregate view periodically ──────────────────
-    op.execute("""
-        SELECT add_continuous_aggregate_policy('hourly_soh_avg',
-          start_offset => INTERVAL '3 hours',
-          end_offset => INTERVAL '1 hour',
-          schedule_interval => INTERVAL '1 hour');
-    """)
+        # ── 6. Add policy to refresh aggregate view periodically ──────────────────
+        autocommit_conn.execute(sa.text("""
+            SELECT add_continuous_aggregate_policy('hourly_soh_avg',
+              start_offset => INTERVAL '3 hours',
+              end_offset => INTERVAL '1 hour',
+              schedule_interval => INTERVAL '1 hour');
+        """))
 
 
 def downgrade() -> None:

@@ -12,3 +12,5 @@ python-jose[cryptography]==3.3.0
 python-multipart==0.0.9
 cryptography==42.0.5
 boto3==1.35.39
+slowapi==0.1.9
+structlog==24.4.0
