@@ -76,13 +76,13 @@ class Metadata(BaseModel):
 
 
 class IngestPayload(BaseModel):
-    schema_version: str = Field(
-        ..., 
+    schema_version: Optional[str] = Field(
+        None, 
         description="Data contract version", 
         examples=["1.0"]
     )
-    source: str = Field(
-        ..., 
+    source: Optional[str] = Field(
+        None, 
         description="Data source identifier (e.g. simulator/operator)", 
         examples=["ev_simulator_aws"]
     )
@@ -92,8 +92,8 @@ class IngestPayload(BaseModel):
         description="Unique identifier for the battery pack", 
         examples=["B0047"]
     )
-    vehicle_id: str = Field(
-        ..., 
+    vehicle_id: Optional[str] = Field(
+        None, 
         max_length=64, 
         description="Associated vehicle ID", 
         examples=["VH_TESLA_042"]
@@ -117,6 +117,46 @@ class IngestPayload(BaseModel):
     )
     measurements: Measurements
     metadata: Optional[Metadata] = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "schema_version": "1.0",
+                    "source": "ev_simulator_local",
+                    "battery_id": "EV_B0005_001",
+                    "vehicle_id": "VH_TESLA_042",
+                    "timestamp": "2024-01-15T14:23:45.123Z",
+                    "cycle_number": 147,
+                    "cycle_type": "discharge",
+                    "measurements": {
+                        "voltage_v": 3.8124,
+                        "current_a": -1.9987,
+                        "temperature_c": 24.5,
+                        "capacity_mah": 1823.4,
+                        "internal_resistance_ohm": 0.0214
+                    },
+                    "metadata": {
+                        "simulator_version": "1.0.0",
+                        "replay_speed": 1.0,
+                        "source_file": "B0005.csv"
+                    }
+                },
+                {
+                    "battery_id": "EV_B0005_001",
+                    "timestamp": "2024-01-15T14:23:45.123Z",
+                    "cycle_number": 147,
+                    "cycle_type": "discharge",
+                    "measurements": {
+                        "voltage_v": 3.8124,
+                        "current_a": -1.9987,
+                        "temperature_c": 24.5,
+                        "capacity_mah": 1823.4
+                    }
+                }
+            ]
+        }
+    }
 
 
 class IngestResponse(BaseModel):

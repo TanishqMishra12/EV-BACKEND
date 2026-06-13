@@ -102,7 +102,7 @@ def ingest_telemetry_shared(payload, db: Session, background_tasks=None, source:
     if battery is None:
         battery = Battery(
             battery_id=payload.battery_id,
-            vehicle_id=payload.vehicle_id,
+            vehicle_id=payload.vehicle_id or "UNKNOWN",
             nominal_capacity_mah=DEFAULT_NOMINAL_CAPACITY_MAH,
         )
         db.add(battery)

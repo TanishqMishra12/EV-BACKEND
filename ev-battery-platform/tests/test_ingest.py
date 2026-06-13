@@ -90,3 +90,52 @@ def test_ingest_duplicate_battery_id_reuses_existing(client, db_session):
 
     telemetry_count = db_session.query(Telemetry).count()
     assert telemetry_count == 2
+
+
+def test_ingest_minimal_payload(client, db_session):
+    """Minimal payload with only required fields should return 202 and insert a telemetry row."""
+    minimal_payload = {
+        "battery_id": "EV_MINIMAL_001",
+        "timestamp": "2024-01-15T14:23:45.123Z",
+        "cycle_number": 1,
+        "cycle_type": "discharge",
+        "measurements": {
+            "voltage_v": 3.8,
+            "current_a": -2.0,
+            "temperature_c": 25.0,
+            "capacity_mah": 1900.0,
+        }
+    }
+    response = client.post("/api/v1/ingest", json=minimal_payload)
+    assert response.status_code == 202
+    body = response.json()
+    assert body["ingested"] is True
+    assert body["battery_id"] == "EV_MINIMAL_001"
+
+    # Verify telemetry row exists in DB
+    row = db_session.query(Telemetry).filter_by(battery_id="EV_MINIMAL_001").first()
+    assert row is not None
+    assert float(row.voltage_v) == 3.8
+    assert float(row.capacity_mah) == 1900.0
+
+
+def test_ingest_minimal_payload_auto_creates_battery_with_unknown_vehicle(client, db_session):
+    """Ingesting a minimal payload without vehicle_id should auto-create the battery with vehicle_id = 'UNKNOWN'."""
+    minimal_payload = {
+        "battery_id": "EV_MINIMAL_002",
+        "timestamp": "2024-01-15T14:23:45.123Z",
+        "cycle_number": 1,
+        "cycle_type": "discharge",
+        "measurements": {
+            "voltage_v": 3.8,
+            "current_a": -2.0,
+            "temperature_c": 25.0,
+            "capacity_mah": 1900.0,
+        }
+    }
+    response = client.post("/api/v1/ingest", json=minimal_payload)
+    assert response.status_code == 202
+
+    battery = db_session.query(Battery).filter_by(battery_id="EV_MINIMAL_002").first()
+    assert battery is not None
+    assert battery.vehicle_id == "UNKNOWN"

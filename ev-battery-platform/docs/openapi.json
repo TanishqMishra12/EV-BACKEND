@@ -818,7 +818,14 @@
       "IngestPayload": {
         "properties": {
           "schema_version": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Schema Version",
             "description": "Data contract version",
             "examples": [
@@ -826,7 +833,14 @@
             ]
           },
           "source": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Source",
             "description": "Data source identifier (e.g. simulator/operator)",
             "examples": [
@@ -843,8 +857,15 @@
             ]
           },
           "vehicle_id": {
-            "type": "string",
-            "maxLength": 64,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Vehicle Id",
             "description": "Associated vehicle ID",
             "examples": [
@@ -894,16 +915,48 @@
         },
         "type": "object",
         "required": [
-          "schema_version",
-          "source",
           "battery_id",
-          "vehicle_id",
           "timestamp",
           "cycle_number",
           "cycle_type",
           "measurements"
         ],
-        "title": "IngestPayload"
+        "title": "IngestPayload",
+        "examples": [
+          {
+            "battery_id": "EV_B0005_001",
+            "cycle_number": 147,
+            "cycle_type": "discharge",
+            "measurements": {
+              "capacity_mah": 1823.4,
+              "current_a": -1.9987,
+              "internal_resistance_ohm": 0.0214,
+              "temperature_c": 24.5,
+              "voltage_v": 3.8124
+            },
+            "metadata": {
+              "replay_speed": 1.0,
+              "simulator_version": "1.0.0",
+              "source_file": "B0005.csv"
+            },
+            "schema_version": "1.0",
+            "source": "ev_simulator_local",
+            "timestamp": "2024-01-15T14:23:45.123Z",
+            "vehicle_id": "VH_TESLA_042"
+          },
+          {
+            "battery_id": "EV_B0005_001",
+            "cycle_number": 147,
+            "cycle_type": "discharge",
+            "measurements": {
+              "capacity_mah": 1823.4,
+              "current_a": -1.9987,
+              "temperature_c": 24.5,
+              "voltage_v": 3.8124
+            },
+            "timestamp": "2024-01-15T14:23:45.123Z"
+          }
+        ]
       },
       "IngestResponse": {
         "properties": {
