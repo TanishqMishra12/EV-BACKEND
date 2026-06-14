@@ -60,7 +60,16 @@ def _calculate_soh_with_session(battery_id: str, db: Session) -> float | None:
         .order_by(desc(Telemetry.recorded_at))
         .first()
     )
-    if latest_reading is None or latest_reading.capacity_mah is None:
+    if latest_reading is None:
+        import logging
+        logger = logging.getLogger("soh_service")
+        logger.info(f"Skipping SoH calc for {battery_id} — no telemetry records found")
+        return None
+
+    if latest_reading.capacity_mah is None:
+        import logging
+        logger = logging.getLogger("soh_service")
+        logger.info(f"Skipping SoH calc for {battery_id} — no capacity_mah yet")
         return None
 
     current_capacity = float(latest_reading.capacity_mah)

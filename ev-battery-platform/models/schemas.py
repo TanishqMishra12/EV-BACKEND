@@ -42,8 +42,8 @@ class Measurements(BaseModel):
         description="Temperature in Celsius", 
         examples=[24.5]
     )
-    capacity_mah: float = Field(
-        ..., 
+    capacity_mah: Optional[float] = Field(
+        None, 
         description="Measured/remaining capacity in mAh", 
         examples=[1823.4]
     )
@@ -109,8 +109,8 @@ class IngestPayload(BaseModel):
         description="The battery test cycle index", 
         examples=[47]
     )
-    cycle_type: str = Field(
-        ..., 
+    cycle_type: Optional[str] = Field(
+        "unknown", 
         max_length=16, 
         description="Operation type: 'charge' or 'discharge'", 
         examples=["discharge"]
@@ -373,8 +373,8 @@ class SoHResponse(BaseModel):
         description="Battery identifier", 
         examples=["B0047"]
     )
-    current_soh_percent: float = Field(
-        ..., 
+    current_soh_percent: Optional[float] = Field(
+        None, 
         description="Latest calculated SOH percent", 
         examples=[83.71]
     )
@@ -383,22 +383,27 @@ class SoHResponse(BaseModel):
         description="Health status label ('healthy', 'warning', or 'critical')", 
         examples=["healthy"]
     )
-    nominal_capacity_mah: float = Field(
-        ..., 
+    nominal_capacity_mah: Optional[float] = Field(
+        None, 
         description="Battery rated capacity in mAh", 
         examples=[2000.0]
     )
-    current_capacity_mah: float = Field(
-        ..., 
+    current_capacity_mah: Optional[float] = Field(
+        None, 
         description="Latest measured capacity in mAh", 
         examples=[1674.3]
     )
-    last_calculated_at: datetime = Field(
-        ..., 
+    last_calculated_at: Optional[datetime] = Field(
+        None, 
         description="Timestamp of the calculation", 
         examples=["2026-06-13T17:03:00Z"]
     )
-    trend: SoHTrend
+    trend: Optional[SoHTrend] = None
+    message: Optional[str] = Field(
+        None,
+        description="Optional diagnostic/availability message",
+        examples=["No SoH data available yet — capacity_mah not received"]
+    )
 
 
 # ---------------------------------------------------------------------------

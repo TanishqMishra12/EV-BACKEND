@@ -118,6 +118,7 @@ def ingest_telemetry_shared(payload, db: Session, background_tasks=None, source:
         temperature_c=payload.measurements.temperature_c,
         capacity_mah=payload.measurements.capacity_mah,
         cycle_type=payload.cycle_type,
+        internal_resistance_ohm=payload.measurements.internal_resistance_ohm,
     )
     db.add(reading)
     db.commit()

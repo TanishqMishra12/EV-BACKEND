@@ -45,9 +45,21 @@ def get_soh(
     )
 
     if not snapshots:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "No SoH data available for this battery"},
+        battery = db.query(Battery).filter(Battery.battery_id == battery_id).first()
+        if battery is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "Battery not found"},
+            )
+        return SoHResponse(
+            battery_id=battery_id,
+            current_soh_percent=None,
+            status="unknown",
+            nominal_capacity_mah=float(battery.nominal_capacity_mah),
+            current_capacity_mah=None,
+            last_calculated_at=None,
+            trend=None,
+            message="No SoH data available yet — capacity_mah not received"
         )
 
     # Latest snapshot is first (desc order)

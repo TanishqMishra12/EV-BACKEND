@@ -584,10 +584,13 @@ components:
           examples:
           - 47
         cycle_type:
-          type: string
-          maxLength: 16
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
           title: Cycle Type
           description: 'Operation type: ''charge'' or ''discharge'''
+          default: unknown
           examples:
           - discharge
         measurements:
@@ -601,7 +604,6 @@ components:
       - battery_id
       - timestamp
       - cycle_number
-      - cycle_type
       - measurements
       title: IngestPayload
       examples:
@@ -672,7 +674,9 @@ components:
           examples:
           - 24.5
         capacity_mah:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Capacity Mah
           description: Measured/remaining capacity in mAh
           examples:
@@ -690,7 +694,6 @@ components:
       - voltage_v
       - current_a
       - temperature_c
-      - capacity_mah
       title: Measurements
     Metadata:
       properties:
@@ -789,7 +792,9 @@ components:
           examples:
           - B0047
         current_soh_percent:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Current Soh Percent
           description: Latest calculated SOH percent
           examples:
@@ -801,35 +806,46 @@ components:
           examples:
           - healthy
         nominal_capacity_mah:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Nominal Capacity Mah
           description: Battery rated capacity in mAh
           examples:
           - 2000.0
         current_capacity_mah:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Current Capacity Mah
           description: Latest measured capacity in mAh
           examples:
           - 1674.3
         last_calculated_at:
-          type: string
-          format: date-time
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
           title: Last Calculated At
           description: Timestamp of the calculation
           examples:
           - '2026-06-13T17:03:00Z'
         trend:
-          $ref: '#/components/schemas/SoHTrend'
+          anyOf:
+          - $ref: '#/components/schemas/SoHTrend'
+          - type: 'null'
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+          description: Optional diagnostic/availability message
+          examples:
+          - "No SoH data available yet \u2014 capacity_mah not received"
       type: object
       required:
       - battery_id
-      - current_soh_percent
       - status
-      - nominal_capacity_mah
-      - current_capacity_mah
-      - last_calculated_at
-      - trend
       title: SoHResponse
     SoHTrend:
       properties:

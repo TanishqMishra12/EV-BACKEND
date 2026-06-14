@@ -146,7 +146,7 @@ def test_soh_battery_not_found(client):
 
 
 def test_soh_no_snapshots(client, db_session):
-    """Battery exists but no SoH data yet should return 404."""
+    """Battery exists but no SoH data yet should return graceful 200 with message."""
     battery = Battery(
         battery_id="BAT_EMPTY",
         vehicle_id="VH_EMPTY",
@@ -156,4 +156,14 @@ def test_soh_no_snapshots(client, db_session):
     db_session.commit()
 
     response = client.get("/api/v1/soh/BAT_EMPTY")
-    assert response.status_code == 404
+    assert response.status_code == 200
+    
+    body = response.json()
+    assert body["battery_id"] == "BAT_EMPTY"
+    assert body["current_soh_percent"] is None
+    assert body["status"] == "unknown"
+    assert body["nominal_capacity_mah"] == 2000.0
+    assert body["current_capacity_mah"] is None
+    assert body["last_calculated_at"] is None
+    assert body["trend"] is None
+    assert body["message"] == "No SoH data available yet — capacity_mah not received"

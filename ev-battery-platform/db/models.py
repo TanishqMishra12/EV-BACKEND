@@ -67,6 +67,7 @@ class Telemetry(Base):
     temperature_c = Column(Numeric(6, 2), nullable=False)
     capacity_mah = Column(Numeric(10, 2), nullable=True)
     cycle_type = Column(String(16), nullable=False)
+    internal_resistance_ohm = Column(Numeric(10, 6), nullable=True)
     ingested_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
