@@ -11,6 +11,10 @@ __pycache__/
 venv/
 env/
 
+node_modules/
+ev-diagnostics-ui/node_modules/
+frontend/node_modules/
+
 # Dataset files (Keep your master code repo lightweight)
 ml/data/data/
 ml/data/*.csv
