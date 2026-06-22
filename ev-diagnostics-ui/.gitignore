@@ -1,0 +1,5 @@
+git add .gitignore
+git add index.html
+git add src/
+git add dist/index.html
+git status

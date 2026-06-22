@@ -1,15 +1,25 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from 'recharts';
-import { getTelemetry, getSoH, getRUL, getDegradation } from '../api/client';
-import {
-  ArrowLeft, Loader2, AlertTriangle, RefreshCw,
-  Cpu, Activity, Zap, Thermometer, Battery as BatteryIcon,
-} from 'lucide-react';
+import { getTelemetry, getSoH, getRUL, ApiError } from '../api/client';
+import DarkChart from '../components/DarkChart';
+import StatusDot from '../components/StatusDot';
+import { ArrowLeft } from 'lucide-react';
 
-const POLL_INTERVAL = 30_000;
+/**
+ * BatteryDetailPage — 3-column layout with SoH gauge, telemetry chart, trend/RUL.
+ *
+ * Data from: /telemetry/{id}?limit=50, /soh/{id}, /rul/{id}
+ * Polls every 10 seconds with visibility-aware pausing.
+ */
+
+const POLL_INTERVAL = 10_000;
+
+const STATUS_COLORS = {
+  healthy: 'var(--accent-green)',
+  warning: 'var(--accent-amber)',
+  critical: 'var(--accent-red)',
+  unknown: 'var(--text-muted)',
+};
 
 export default function BatteryDetailPage() {
   const { batteryId } = useParams();
@@ -19,320 +29,398 @@ export default function BatteryDetailPage() {
   const [soh, setSoH] = useState(null);
   const [rul, setRul] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [errors, setErrors] = useState({ telemetry: null, soh: null, rul: null });
+  const isFirstLoad = useRef(true);
 
-  const fetchAll = useCallback(async (isRefresh = false) => {
-    try {
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
-      setError(null);
+  const fetchAll = useCallback(async () => {
+    if (isFirstLoad.current) setLoading(true);
 
-      const [telData, sohData, rulData] = await Promise.all([
-        getTelemetry(batteryId, 50).catch(e => ({ error: true, message: e.message })),
-        getSoH(batteryId).catch(e => ({ error: true, message: e.message })),
-        getRUL(batteryId).catch(e => ({ error: true, message: e.message, status: e.status })),
-      ]);
+    const newErrors = { telemetry: null, soh: null, rul: null };
 
-      if (!telData.error) setTelemetry(telData);
-      if (!sohData.error) setSoH(sohData);
-      if (!rulData.error) setRul(rulData);
-      else if (rulData.status === 404) setRul({ status: 'pending', message: 'Battery not found' });
-      else setRul({ status: 'pending', message: rulData.message });
+    const [telResult, sohResult, rulResult] = await Promise.all([
+      getTelemetry(batteryId, 50).catch((e) => {
+        if (e instanceof ApiError && e.status === 401) {
+          return { _authError: true };
+        }
+        newErrors.telemetry = e.status >= 500 ? 'SERVER ERROR — RETRYING...' : 'CONNECTION ERROR';
+        return null;
+      }),
+      getSoH(batteryId).catch((e) => {
+        if (e instanceof ApiError && e.status === 404) return { current_soh_percent: null, status: 'unknown', message: 'No SoH data available yet' };
+        newErrors.soh = e.status >= 500 ? 'SERVER ERROR' : null;
+        return null;
+      }),
+      getRUL(batteryId).catch((e) => {
+        if (e instanceof ApiError && e.status === 404) return { _pending: true };
+        newErrors.rul = e.status >= 500 ? 'SERVER ERROR' : null;
+        return null;
+      }),
+    ]);
 
-    } catch (err) {
-      setError(err.message || 'Failed to load battery data');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    // Handle 401 from any endpoint
+    if (telResult?._authError) {
+      navigate('/login', { replace: true });
+      return;
     }
-  }, [batteryId]);
+
+    if (telResult) setTelemetry(telResult);
+    if (sohResult) setSoH(sohResult);
+    if (rulResult) {
+      if (rulResult._pending) setRul({ _pending: true });
+      else setRul(rulResult);
+    }
+
+    setErrors(newErrors);
+    setLastUpdated(new Date());
+    isFirstLoad.current = false;
+    setLoading(false);
+  }, [batteryId, navigate]);
 
   useEffect(() => {
     fetchAll();
-    const timer = setInterval(() => fetchAll(true), POLL_INTERVAL);
-    return () => clearInterval(timer);
+    const timer = setInterval(fetchAll, POLL_INTERVAL);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchAll();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [fetchAll]);
 
-  // Prepare chart data from telemetry readings (reverse so oldest first)
+  // Chart data
   const chartData = telemetry?.readings
-    ? [...telemetry.readings].reverse().map(r => ({
+    ? [...telemetry.readings].reverse().map((r) => ({
         cycle: r.cycle_number,
         voltage_v: r.voltage_v,
-        temperature_c: r.temperature_c,
         current_a: r.current_a,
-        capacity_mah: r.capacity_mah,
+        temperature_c: r.temperature_c,
       }))
     : [];
 
-  // SoH trend data for the second chart
-  const sohChartData = soh?.trend?.history?.map(h => ({
+  // SoH trend data
+  const sohChartData = soh?.trend?.history?.map((h) => ({
     cycle: h.cycle,
     soh_percent: h.soh_percent,
   })) || [];
 
   const sohVal = soh?.current_soh_percent;
   const sohStatus = soh?.status || 'unknown';
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'healthy': return 'text-emerald-400';
-      case 'warning': return 'text-amber-400';
-      case 'critical': return 'text-rose-400';
-      default: return 'text-slate-400';
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <div className="text-center space-y-4">
-          <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mx-auto" />
-          <p className="text-sm text-slate-400 font-mono">Loading battery {batteryId}...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error && !telemetry && !soh) {
-    return (
-      <div className="flex items-center justify-center h-[60vh] px-6">
-        <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-8 max-w-md text-center">
-          <AlertTriangle className="w-10 h-10 text-rose-400 mx-auto mb-4" />
-          <p className="text-rose-300 font-mono text-sm mb-4">{error}</p>
-          <div className="flex gap-3 justify-center">
-            <button onClick={() => navigate(-1)} className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-md text-sm font-mono text-slate-300 hover:bg-slate-700 transition-colors">
-              Go Back
-            </button>
-            <button onClick={() => fetchAll()} className="px-4 py-2 bg-rose-500/20 border border-rose-500/40 rounded-md text-sm font-mono text-rose-300 hover:bg-rose-500/30 transition-colors">
-              Retry
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  const statusColor = STATUS_COLORS[sohStatus] || STATUS_COLORS.unknown;
   const latestReading = telemetry?.readings?.[0];
 
+  // Cycle type breakdown
+  const cycleTypes = telemetry?.readings?.reduce((acc, r) => {
+    const type = r.cycle_type || 'unknown';
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {}) || {};
+
+  // Loading
+  if (loading) {
+    return (
+      <div style={{ padding: '24px' }}>
+        <div className="scan-line" style={{ height: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)' }}>
+            LOADING BATTERY {batteryId}...
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6 md:p-10 lg:p-12 space-y-8 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+    <div style={{ padding: '24px' }} className="animate-fadeIn">
+      {/* ── Header ────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <button
             onClick={() => navigate('/dashboard')}
-            className="p-2 rounded-md border border-slate-700 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/40 transition-all"
+            style={{
+              background: 'none',
+              border: '1px solid var(--border-default)',
+              color: 'var(--text-secondary)',
+              padding: '6px 8px',
+              cursor: 'pointer',
+              display: 'flex',
+              transition: 'border-color 200ms',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent-cyan)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-default)'; }}
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft size={16} />
           </button>
           <div>
-            <h2 className="text-xl font-bold text-slate-100 font-mono tracking-wider">{batteryId}</h2>
-            {soh && (
-              <p className="text-sm text-slate-500 font-mono mt-1">
-                Vehicle: {telemetry?.battery_id || batteryId} · Status: <span className={getStatusColor(sohStatus)}>{sohStatus.toUpperCase()}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h2 style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '18px',
+                fontWeight: 700,
+                color: 'var(--text-primary)',
+                margin: 0,
+                letterSpacing: '0.08em',
+              }}>
+                BATTERY {batteryId}
+              </h2>
+              <span style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '10px',
+                fontWeight: 700,
+                color: statusColor,
+                border: `1px solid ${statusColor}`,
+                padding: '2px 8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+              }}>
+                {sohStatus}
+              </span>
+              <StatusDot status={sohStatus} size={8} />
+            </div>
+            {latestReading?.recorded_at && (
+              <p style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', margin: '4px 0 0' }}>
+                LAST SEEN: {new Date(latestReading.recorded_at).toLocaleString()}
               </p>
             )}
           </div>
         </div>
-        <button
-          onClick={() => fetchAll(true)}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-md text-sm font-mono text-slate-300 hover:border-cyan-500/40 hover:text-cyan-400 transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+
+        {lastUpdated && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)' }}>
+            LAST UPDATED: {lastUpdated.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
       </div>
 
-      {/* ── Telemetry Readout Grid ──────────────────────────────────────── */}
-      {latestReading && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard
-            label="Cell Voltage" tag="V_SENS" icon={<Zap className="w-4 h-4" />}
-            value={latestReading.voltage_v} unit="V"
-            color="text-cyan-400" tagColor="text-cyan-400 bg-cyan-950/40 border-cyan-900"
-            barValue={(latestReading.voltage_v - 2.5) / 1.7 * 100} barColor="bg-cyan-400"
-          />
-          <MetricCard
-            label="Temperature" tag="TEMP_C" icon={<Thermometer className="w-4 h-4" />}
-            value={latestReading.temperature_c?.toFixed(1)} unit="°C"
-            color={latestReading.temperature_c > 42 ? 'text-amber-400' : 'text-slate-100'}
-            tagColor="text-rose-400 bg-rose-950/40 border-rose-900"
-            barValue={Math.min(100, latestReading.temperature_c / 80 * 100)}
-            barColor={latestReading.temperature_c > 42 ? 'bg-amber-500' : 'bg-emerald-500'}
-          />
-          <MetricCard
-            label="Capacity" tag="CAP_MAH" icon={<BatteryIcon className="w-4 h-4" />}
-            value={latestReading.capacity_mah?.toFixed(1) || 'N/A'} unit="mAh"
-            color="text-emerald-400" tagColor="text-emerald-400 bg-emerald-950/40 border-emerald-900"
-            barValue={latestReading.capacity_mah ? latestReading.capacity_mah / 2200 * 100 : 0}
-            barColor="bg-emerald-400"
-          />
-          <MetricCard
-            label="SoH" tag="HEALTH" icon={<Activity className="w-4 h-4" />}
-            value={sohVal != null ? sohVal.toFixed(1) : 'N/A'} unit="%"
-            color={sohVal > 80 ? 'text-emerald-400' : sohVal > 60 ? 'text-amber-400' : 'text-rose-400'}
-            tagColor={`${getStatusColor(sohStatus)} bg-slate-800/40 border-slate-700`}
-            barValue={sohVal || 0} barColor={sohVal > 80 ? 'bg-emerald-400' : sohVal > 60 ? 'bg-amber-500' : 'bg-rose-500'}
-          />
-        </div>
-      )}
+      {/* ── 3-Column Layout ───────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '30% 40% 30%', gap: '16px' }}>
 
-      {/* ── Charts Row ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Telemetry Chart */}
-        <div className="bg-[#111827] border border-slate-800 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse" />
-            <h3 className="text-sm font-bold font-mono tracking-wider uppercase text-slate-200">
-              Telemetry Stream
-            </h3>
-          </div>
-          <div className="h-72 bg-[#050914] rounded-md border border-slate-800/80 pt-2">
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 5, right: 15, left: -20, bottom: 5 }}>
-                  <CartesianGrid stroke="rgba(0,212,255,0.08)" strokeDasharray="3 3" />
-                  <XAxis dataKey="cycle" stroke="#475569" tick={{ fill: '#94A3B8', fontSize: 10, fontFamily: 'monospace' }} />
-                  <YAxis yAxisId="left" domain={[2.5, 4.5]} stroke="#475569" tick={{ fill: '#00D4FF', fontSize: 10, fontFamily: 'monospace' }} />
-                  <YAxis yAxisId="right" orientation="right" domain={[15, 60]} stroke="#475569" tick={{ fill: '#F59E0B', fontSize: 10, fontFamily: 'monospace' }} />
-                  <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderColor: '#1E3A5F', borderRadius: '6px', fontFamily: 'monospace', fontSize: '11px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="voltage_v" stroke="#00D4FF" strokeWidth={2} dot={false} name="Voltage (V)" />
-                  <Line yAxisId="right" type="monotone" dataKey="temperature_c" stroke="#F59E0B" strokeWidth={2} dot={false} name="Temp (°C)" />
-                </LineChart>
-              </ResponsiveContainer>
+        {/* ── LEFT COLUMN (30%) ─────────────────────────── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+          {/* SoH Vertical Bar */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px', letterSpacing: '0.06em' }}>
+              STATE OF HEALTH
+            </div>
+            {sohVal != null ? (
+              <>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 700, color: statusColor, lineHeight: 1, marginBottom: '16px' }}>
+                  {sohVal.toFixed(1)}<span style={{ fontSize: '18px', color: 'var(--text-muted)' }}>%</span>
+                </div>
+                {/* Vertical segmented bar */}
+                <div style={{ width: '100%', height: '8px', backgroundColor: 'var(--border-default)', position: 'relative' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${Math.min(100, Math.max(0, sohVal))}%`,
+                    backgroundColor: statusColor === 'var(--text-muted)' ? '#4B5563' : statusColor,
+                    transition: 'width 500ms',
+                  }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  <span>0%</span>
+                  <span>EOL 70%</span>
+                  <span>100%</span>
+                </div>
+              </>
             ) : (
-              <div className="h-full flex items-center justify-center text-slate-600 font-mono text-sm">
-                No telemetry data available
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '14px', color: 'var(--text-muted)' }}>
+                SOH: PENDING
               </div>
             )}
           </div>
-        </div>
 
-        {/* SoH Trend Chart */}
-        <div className="bg-[#111827] border border-slate-800 rounded-xl p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-emerald-400" />
-              <h3 className="text-sm font-bold font-mono tracking-wider uppercase text-slate-200">
-                SoH Trend
-              </h3>
+          {/* Key Stats */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '16px', letterSpacing: '0.06em' }}>
+              LATEST READINGS
             </div>
-            {soh?.trend && (
-              <span className={`text-[11px] font-mono font-bold px-2 py-1 rounded border ${
-                soh.trend.direction === 'degrading' ? 'text-rose-400 bg-rose-500/10 border-rose-500/30'
-                : soh.trend.direction === 'improving' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
-                : 'text-slate-400 bg-slate-500/10 border-slate-500/30'
-              }`}>
-                {soh.trend.direction.toUpperCase()} ({soh.trend.delta_last_10_cycles > 0 ? '+' : ''}{soh.trend.delta_last_10_cycles}%)
+            {latestReading ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <StatRow label="VOLTAGE" value={latestReading.voltage_v?.toFixed(4)} unit="V" color="var(--accent-cyan)" />
+                <StatRow label="CURRENT" value={latestReading.current_a?.toFixed(4)} unit="A" color="var(--accent-green)" />
+                <StatRow label="TEMPERATURE" value={latestReading.temperature_c?.toFixed(1)} unit="C" color="var(--accent-amber)" />
+              </div>
+            ) : (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }} className="blink-block">
+                NO DATA — AWAITING TELEMETRY STREAM...
               </span>
             )}
           </div>
-          <div className="h-72 bg-[#050914] rounded-md border border-slate-800/80 pt-2">
-            {sohChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={sohChartData} margin={{ top: 5, right: 15, left: -20, bottom: 5 }}>
-                  <CartesianGrid stroke="rgba(16,185,129,0.08)" strokeDasharray="3 3" />
-                  <XAxis dataKey="cycle" stroke="#475569" tick={{ fill: '#94A3B8', fontSize: 10, fontFamily: 'monospace' }} />
-                  <YAxis domain={[50, 100]} stroke="#475569" tick={{ fill: '#10B981', fontSize: 10, fontFamily: 'monospace' }} />
-                  <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderColor: '#1E3A5F', borderRadius: '6px', fontFamily: 'monospace', fontSize: '11px' }} />
-                  <Line type="monotone" dataKey="soh_percent" stroke="#10B981" strokeWidth={2.5} dot={{ r: 3 }} name="SoH (%)" />
-                </LineChart>
-              </ResponsiveContainer>
+
+          {/* RUL Panel */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px', letterSpacing: '0.06em' }}>
+              REMAINING USEFUL LIFE
+            </div>
+            {rul?._pending ? (
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--accent-amber)' }}>
+                CALCULATING...
+              </div>
+            ) : rul?.predicted_rul_cycles != null ? (
+              <>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                  ESTIMATED REMAINING CYCLES:
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: 'var(--accent-cyan)', lineHeight: 1 }}>
+                  {rul.predicted_rul_cycles}
+                </div>
+                {rul.confidence_interval && (
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-secondary)', marginTop: '8px' }}>
+                    ({rul.confidence_interval.lower_bound} - {rul.confidence_interval.upper_bound}) at {rul.confidence_interval.confidence_percent}% confidence
+                  </div>
+                )}
+                {rul.alert_level && rul.alert_level !== 'none' && (
+                  <div style={{
+                    marginTop: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}>
+                    <StatusDot status={rul.alert_level === 'warning' ? 'warning' : 'critical'} size={8} />
+                    <span style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: rul.alert_level === 'warning' ? 'var(--accent-amber)' : 'var(--accent-red)',
+                    }}>
+                      ALERT: {rul.alert_level.toUpperCase()}
+                    </span>
+                  </div>
+                )}
+              </>
             ) : (
-              <div className="h-full flex items-center justify-center text-slate-600 font-mono text-sm">
-                {soh?.message || 'No SoH data available'}
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--text-muted)' }}>
+                --
               </div>
             )}
           </div>
         </div>
-      </div>
 
-      {/* ── RUL Prediction Panel ───────────────────────────────────────── */}
-      <div className="bg-[#111827] border border-slate-800 rounded-xl p-6">
-        <div className="flex items-center gap-2 mb-5">
-          <Cpu className="w-5 h-5 text-cyan-400" />
-          <h3 className="text-sm font-bold font-mono tracking-wider uppercase text-slate-200">
-            LSTM RUL Prediction
-          </h3>
+        {/* ── CENTER COLUMN (40%) ───────────────────────── */}
+        <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '16px', letterSpacing: '0.06em' }}>
+            TELEMETRY STREAM
+          </div>
+          {errors.telemetry ? (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--accent-red)', padding: '40px 0', textAlign: 'center' }}>
+              {errors.telemetry}
+            </div>
+          ) : (
+            <DarkChart
+              data={chartData}
+              xKey="cycle"
+              height={400}
+              yAxes={[
+                { id: 'left', orientation: 'left', domain: [2.5, 4.5] },
+                { id: 'right', orientation: 'right', domain: [15, 60] },
+              ]}
+              lines={[
+                { dataKey: 'voltage_v', color: '#00D4FF', name: 'Voltage (V)', yAxisId: 'left' },
+                { dataKey: 'current_a', color: '#00FF87', name: 'Current (A)', yAxisId: 'left' },
+                { dataKey: 'temperature_c', color: '#F59E0B', name: 'Temperature (C)', yAxisId: 'right' },
+              ]}
+              showLegend
+            />
+          )}
         </div>
 
-        {rul?.status === 'pending' ? (
-          <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-6 text-center">
-            <Loader2 className="w-8 h-8 text-amber-400 animate-spin mx-auto mb-3" />
-            <p className="text-sm font-mono text-amber-300 font-bold">Calculating...</p>
-            <p className="text-xs font-mono text-slate-500 mt-2">
-              {rul?.message || 'Insufficient telemetry data for RUL prediction. Continue ingesting data.'}
-            </p>
-          </div>
-        ) : rul?.status === 'ready' ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-[#0A0F1E] border border-slate-800 rounded-lg p-5 text-center">
-              <p className="text-xs text-slate-500 font-mono uppercase mb-2">Predicted Cycles Remaining</p>
-              <p className="text-4xl font-extrabold font-mono text-amber-500">{rul.predicted_rul_cycles}</p>
-              <p className="text-xs text-slate-500 font-mono mt-2">until EOL ({rul.eol_threshold_soh}% SoH)</p>
+        {/* ── RIGHT COLUMN (30%) ────────────────────────── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+          {/* SoH Trend */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>
+                SOH TREND
+              </span>
+              {soh?.trend && (
+                <span style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: soh.trend.direction === 'degrading' ? 'var(--accent-red)' : soh.trend.direction === 'improving' ? 'var(--accent-green)' : 'var(--text-muted)',
+                  border: `1px solid`,
+                  padding: '2px 6px',
+                }}>
+                  {soh.trend.direction?.toUpperCase()} ({soh.trend.delta_last_10_cycles > 0 ? '+' : ''}{soh.trend.delta_last_10_cycles}%)
+                </span>
+              )}
             </div>
-            <div className="bg-[#0A0F1E] border border-slate-800 rounded-lg p-5 space-y-3">
-              <p className="text-xs text-slate-500 font-mono uppercase mb-2">Confidence Interval</p>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Lower Bound</span>
-                <span className="text-slate-300 font-bold">{rul.confidence_interval.lower_bound} cycles</span>
-              </div>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Upper Bound</span>
-                <span className="text-slate-300 font-bold">{rul.confidence_interval.upper_bound} cycles</span>
-              </div>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Confidence</span>
-                <span className="text-cyan-400 font-bold">{rul.confidence_interval.confidence_percent}%</span>
-              </div>
+            <DarkChart
+              data={sohChartData}
+              xKey="cycle"
+              height={160}
+              yAxes={[{ id: 'default', domain: [50, 100] }]}
+              lines={[{ dataKey: 'soh_percent', color: '#A78BFA', name: 'SoH (%)' }]}
+            />
+          </div>
+
+          {/* Cycle Type Breakdown */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px', letterSpacing: '0.06em' }}>
+              CYCLE BREAKDOWN
             </div>
-            <div className="bg-[#0A0F1E] border border-slate-800 rounded-lg p-5 space-y-3">
-              <p className="text-xs text-slate-500 font-mono uppercase mb-2">Model Info</p>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Model</span>
-                <span className="text-emerald-400 font-bold">{rul.model_version}</span>
+            {Object.keys(cycleTypes).length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {Object.entries(cycleTypes).map(([type, count]) => (
+                  <div key={type} style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                    <span style={{ color: 'var(--text-secondary)', textTransform: 'uppercase' }}>{type}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{count}</span>
+                  </div>
+                ))}
               </div>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Input SoH</span>
-                <span className="text-slate-300 font-bold">{rul.current_soh_percent?.toFixed(1)}%</span>
-              </div>
-              <div className="flex justify-between text-sm font-mono">
-                <span className="text-slate-500">Alert</span>
-                <span className={`font-bold ${
-                  rul.alert_level === 'none' ? 'text-emerald-400' : rul.alert_level === 'warning' ? 'text-amber-400' : 'text-rose-400'
-                }`}>{rul.alert_level?.toUpperCase()}</span>
-              </div>
+            ) : (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>--</span>
+            )}
+          </div>
+
+          {/* Alert Level */}
+          <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '20px' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px', letterSpacing: '0.06em' }}>
+              ALERT LEVEL
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <StatusDot
+                status={
+                  rul?.alert_level === 'critical' ? 'critical' :
+                  rul?.alert_level === 'warning' ? 'warning' : 'healthy'
+                }
+                size={10}
+              />
+              <span style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '14px',
+                fontWeight: 700,
+                color:
+                  rul?.alert_level === 'critical' ? 'var(--accent-red)' :
+                  rul?.alert_level === 'warning' ? 'var(--accent-amber)' :
+                  'var(--accent-green)',
+              }}>
+                {rul?.alert_level ? rul.alert_level.toUpperCase() : 'NONE'}
+              </span>
             </div>
           </div>
-        ) : (
-          <div className="text-center text-slate-500 font-mono text-sm py-6">
-            RUL data not available
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
 }
 
-/* ── Reusable Metric Card ──────────────────────────────────────────────────── */
-function MetricCard({ label, tag, icon, value, unit, color, tagColor, barValue, barColor }) {
+/* ── StatRow helper ──────────────────────────────────────────────────────── */
+function StatRow({ label, value, unit, color }) {
   return (
-    <div className="bg-[#111827] border border-slate-800 rounded-xl p-5">
-      <div className="flex justify-between items-center text-slate-500 mb-3">
-        <span className="text-xs font-bold font-mono tracking-wider uppercase flex items-center gap-2">
-          {icon} {label}
-        </span>
-        <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${tagColor}`}>{tag}</span>
-      </div>
-      <div className="flex items-baseline gap-2">
-        <span className={`text-3xl font-bold font-mono ${color}`}>{value}</span>
-        <span className="text-sm text-slate-500 font-mono">{unit}</span>
-      </div>
-      <div className="h-1.5 bg-slate-900 rounded-full mt-4 overflow-hidden">
-        <div className={`h-full ${barColor} transition-all duration-500`} style={{ width: `${Math.min(100, Math.max(0, barValue))}%` }} />
-      </div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>
+        {label}
+      </span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '14px', fontWeight: 700, color }}>
+        {value != null ? value : '--'}
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: '4px' }}>{unit}</span>
+      </span>
     </div>
   );
 }

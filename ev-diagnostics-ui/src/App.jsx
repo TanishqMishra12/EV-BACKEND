@@ -7,7 +7,6 @@ import ProtectedRoute from './components/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import BatteryDetailPage from './pages/BatteryDetailPage';
-import AnalyticsPage from './pages/AnalyticsPage';
 import MyBatteryPage from './pages/MyBatteryPage';
 
 /**
@@ -17,7 +16,6 @@ import MyBatteryPage from './pages/MyBatteryPage';
  *   /login        — public, 3-button login
  *   /dashboard    — admin + operator only
  *   /battery/:id  — admin + operator only
- *   /analytics    — admin + operator only
  *   /my-battery   — customer only
  */
 export default function App() {
@@ -55,14 +53,6 @@ export default function App() {
           element={
             <ProtectedRoute allowedModes={['admin', 'operator']} redirectTo="/my-battery">
               <BatteryDetailPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/analytics"
-          element={
-            <ProtectedRoute allowedModes={['admin', 'operator']} redirectTo="/my-battery">
-              <AnalyticsPage />
             </ProtectedRoute>
           }
         />

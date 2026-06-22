@@ -111,3 +111,5 @@ export const getDegradation = (batteryId, startDate, endDate) => {
 };
 
 export const getHealth = () => apiFetch('/health');
+
+export const getReady = () => apiFetch('/ready');
