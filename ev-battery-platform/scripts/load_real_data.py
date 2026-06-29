@@ -181,7 +181,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NASA Battery Telemetry Ingestion Script")
     parser.add_argument(
         "--dataset-path", 
-        default="../cleaned_dataset", 
+        default="./cleaned_dataset", 
         help="Path to cleaned_dataset folder containing metadata.csv and data/"
     )
     parser.add_argument(

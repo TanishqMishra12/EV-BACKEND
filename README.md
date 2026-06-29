@@ -168,7 +168,25 @@ This starts:
 docker compose exec fastapi alembic upgrade head
 ```
 
-### Step 5: Verify everything is running
+### Step 5: Seed the database with battery data
+
+> The database starts empty. Run the data loader script to populate it with NASA battery telemetry data.
+
+```bash
+# Load all 18 batteries (recommended for full demo)
+docker compose exec fastapi python scripts/load_real_data.py \
+  --dataset-path ./cleaned_dataset \
+  --batteries B0027,B0028,B0029,B0030,B0032,B0033,B0034,B0038,B0039,B0040,B0041,B0042,B0043,B0044,B0045,B0046,B0047,B0048 \
+  --limit-cycles 30
+
+# Or load just 2 batteries for a quick test
+docker compose exec fastapi python scripts/load_real_data.py \
+  --dataset-path ./cleaned_dataset \
+  --batteries B0047,B0048 \
+  --limit-cycles 30
+```
+
+### Step 6: Verify everything is running
 
 ```bash
 # Health check (liveness)
@@ -183,7 +201,7 @@ curl http://localhost:8000/ready
 docker compose ps
 ```
 
-### Step 6: Open the app
+### Step 7: Open the app
 
 | Service          | URL                                    |
 |------------------|----------------------------------------|
